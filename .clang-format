@@ -1,0 +1,10 @@
+---
+# clang-format configuration for pxb-preview.
+# Based on Google C++ Style, with 4-space indentation to match the existing
+# codebase (the project uses .cpp/.h, snake_case, trailing underscores on
+# class members, kCamelCase constants, and ALL_CAPS macros). Run CI with:
+#   clang-format --style=file --dry-run --Werror
+BasedOnStyle: Google
+IndentWidth: 4
+ColumnLimit: 100
+...

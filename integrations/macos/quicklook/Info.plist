@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>English</string>
+    <key>CFBundleGetInfoString</key>
+    <string>PXB Quick Look Generator</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.pxb.pxbql</string>
+    <key>CFBundleName</key>
+    <string>PxbQuickLook</string>
+    <key>CFBundleVersion</key>
+    <string>__PXB_VERSION__</string>
+    <key>CFBundlePackageType</key>
+    <string>QLGc</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>CFBundleExecutable</key>
+    <string>PxbQL</string>
+    <key>QLSupportedExtensions</key>
+    <array>
+        <string>pxb</string>
+    </array>
+    <key>QLThumbnailMinimumSize</key>
+    <integer>16</integer>
+    <key>LSItemContentTypes</key>
+    <array>
+        <string>com.pxb.pxb</string>
+    </array>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>pxb</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>PXB Pixel Art</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.pxb.pxb</string>
+            </array>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+        </dict>
+    </array>
+</dict>
+</plist>

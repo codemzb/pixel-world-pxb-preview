@@ -1,0 +1,166 @@
+# CI for PXB Preview.
+#
+# Windows is the verified, fully-packaged path: MinGW build + NSIS installer +
+# portable zip (scripts/package_windows.ps1). Linux/macOS only build the app
+# and are allowed to fail — the cross-platform code and packaging scripts
+# exist but have not been field-verified on real machines (AGENTS.md §9).
+#
+# Releases: push a tag like v0.0.1 and the Windows artifacts are attached to
+# a GitHub Release automatically (with SHA256SUMS).
+
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+# 连续推送时自动取消同一 ref 上被取代的旧 run（省分钟数）。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # release job uploads assets to a GitHub Release
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MinGW toolchain (MSYS2)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+
+      - name: Fetch SDL3 (prebuilt from SDL releases; never committed)
+        shell: pwsh
+        run: ./scripts/fetch_sdl3.ps1
+
+      - name: Build app + thumbnail DLL
+        shell: msys2 {0}
+        run: |
+          set -e
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_PREFIX_PATH="$(pwd -W)/external/SDL3"
+          cmake --build build
+          cmake -S integrations/windows/PxbThumbnailHandler -B build_thumb -G Ninja
+          cmake --build build_thumb
+          # Both binaries import libwinpthread-1.dll dynamically (objdump-verified);
+          # stage it from the exact toolchain that built them for the packager.
+          mkdir -p external/mingw-runtime
+          cp /mingw64/bin/libwinpthread-1.dll external/mingw-runtime/
+
+      - name: Package (installer + portable zip)
+        shell: pwsh
+        run: |
+          choco install nsis -y --no-progress
+          ./scripts/package_windows.ps1
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pxb-preview-windows-x64
+          path: |
+            dist/windows/*-setup.exe
+            dist/windows/*-portable.zip
+          if-no-files-found: error
+
+  linux:
+    # macOS runner 计费 10×、Linux 3×：日常 main 推送只跑 Windows，
+    # PR / v* tag / 手动触发才跑 Linux/macOS（macOS runner 计费 10 倍，尤其省着用）。
+    if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    continue-on-error: true   # cross-platform not yet field-verified
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain + build SDL3 from source
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake pkg-config curl \
+            libgl1-mesa-dev libegl1-mesa-dev \
+            libx11-dev libxext-dev libxrender-dev libxrandr-dev \
+            libxcursor-dev libxfixes-dev libxi-dev libxinerama-dev \
+            libxtst-dev libxss-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev wayland-protocols libdecor-0-dev \
+            libdrm-dev libgbm-dev \
+            libasound2-dev libpulse-dev libpipewire-0.3-dev \
+            libudev-dev libdbus-1-dev libibus-1.0-dev libfontconfig1-dev
+          curl -L -o sdl3.tar.gz \
+            https://github.com/libsdl-org/SDL/releases/download/release-3.4.14/SDL3-3.4.14.tar.gz
+          tar xf sdl3.tar.gz
+          cmake -S SDL3-3.4.14 -B sdl3-build -DCMAKE_BUILD_TYPE=Release
+          cmake --build sdl3-build --parallel   # install 前必须先构建，否则 .so 不存在
+          sudo cmake --install sdl3-build
+
+      - name: Upload SDL3 configure logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-sdl3-configure-logs
+          path: |
+            sdl3-build/CMakeFiles/CMakeError.log
+            sdl3-build/CMakeFiles/CMakeOutput.log
+          if-no-files-found: ignore
+
+      - name: Build app
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+
+  macos:
+    if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-latest
+    timeout-minutes: 45
+    continue-on-error: true   # cross-platform not yet field-verified
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain + SDL3
+        run: brew install sdl3 cmake ninja
+
+      - name: Build app
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: pxb-preview-windows-x64
+          path: artifact
+
+      - name: Generate checksums
+        run: |
+          cd artifact
+          sha256sum * > SHA256SUMS.txt
+
+      - name: Attach to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: true
+          body: |
+            Windows 构建（MinGW x64）：安装包 + 便携 zip。
+            Linux / macOS 目前为尽力而为的 CI 作业，暂不随 Release 分发。
+          files: |
+            artifact/*-setup.exe
+            artifact/*-portable.zip
+            artifact/SHA256SUMS.txt

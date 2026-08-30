@@ -1,0 +1,22 @@
+# 本地笔记
+Local_AGENTS.md
+
+# 构建产物
+/build/
+/build_thumb/
+/build_out.txt
+/imgui.ini
+
+# 外部下载的依赖（scripts/fetch_sdl3.ps1）
+/external/
+
+# 打包输出（全部产物集中在 dist/<系统>/）
+/dist/
+
+# 日志与系统杂项
+*.log
+Thumbs.db
+.DS_Store
+
+# 防呆：私有笔记请放 _Local_*（历史教训：Local_AGENTS.md 少个下划线被误提交）
+/Local_*.md

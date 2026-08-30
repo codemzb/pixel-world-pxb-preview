@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=PXB Preview
+Comment=Lightweight PXB pixel-art previewer
+Exec=pxb-preview %f
+Terminal=false
+Categories=Graphics;Viewer;
+MimeType=application/x-pxb;

@@ -1,0 +1,10 @@
+# Normalize line endings on commit; check out native on Windows.
+* text=auto
+
+# Binary assets — never touch.
+*.png binary
+*.ico binary
+*.pxb binary
+
+# Force LF for shell scripts so they stay runnable on Unix.
+*.sh text eol=lf

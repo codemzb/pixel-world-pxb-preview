@@ -1,0 +1,32 @@
+// Windows resource script.
+//
+// 1) Embeds the application icon into pxb-preview.exe so that the title bar,
+//    taskbar, Alt-Tab preview and Explorer all use the Pixel World icon.
+//    CMake copies assets/icon.ico to the build directory before windres is
+//    invoked, so the relative path "icon.ico" resolves here.
+// 2) Defines the native About dialog template (IDD_ABOUT) — a true
+//    OS-level window, independent of the SDL/ImGui main window.
+//
+#include <windows.h>
+
+#define IDI_APP   1
+#define IDD_ABOUT 100
+#define IDC_STATIC_TITLE 1001
+#define IDC_STATIC_VER   1002
+#define IDC_STATIC_BODY  1003
+#define IDC_BTN_WEBSITE  1004
+
+1 ICON "icon.ico"
+
+IDD_ABOUT DIALOGEX 0, 0, 216, 118
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "About PXB Preview"
+FONT 9, "Microsoft YaHei UI", 400, 0, 0x86
+BEGIN
+    ICON IDI_APP, -1, 10, 10, 20, 20
+    LTEXT "PXB Preview", IDC_STATIC_TITLE, 38, 8, 170, 14
+    LTEXT "", IDC_STATIC_VER, 38, 24, 170, 10
+    LTEXT "", IDC_STATIC_BODY, 38, 36, 170, 48
+    PUSHBUTTON "", IDC_BTN_WEBSITE, 10, 96, 60, 14
+    DEFPUSHBUTTON "", IDOK, 146, 96, 60, 14
+END
