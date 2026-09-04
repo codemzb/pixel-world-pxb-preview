@@ -101,6 +101,11 @@ struct LayerInfo {
     std::string name;
     int id = 0;
     bool visible = true;        // user-controlled visibility state
+    // Isolated per-layer render (texture_table flavor only — a 128x128
+    // downscale with alpha). Empty for classic preview_table files: those
+    // embed only composited frames, so visibility there is a stored state
+    // with no effect on the picture.
+    RgbaImage preview;
 };
 
 // A single composited frame plus its optional display duration.
@@ -128,6 +133,13 @@ struct PxbDocument {
 
     bool ok() const { return !frame_images.empty() || !thumbnail.empty(); }
     int frame_count() const { return (int)frame_images.size(); }
+    // True when at least one layer carries an isolated preview, i.e. hiding
+    // that layer can actually change the displayed picture.
+    bool has_layer_previews() const {
+        for (const auto& l : layers)
+            if (!l.preview.empty()) return true;
+        return false;
+    }
 };
 
 } // namespace pxb

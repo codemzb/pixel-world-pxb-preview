@@ -346,6 +346,9 @@ int main(int argc, char** argv) {
         pxb::render_ui(app, renderer);
         renderer.end_frame();
     }
+    // Persist the view configuration (View-menu toggles, panel widths,
+    // minimap position) so the next launch restores this session's layout.
+    pxb::save_view_settings(app);
     log_msg("INFO", "main exit normally");
     log_close();
     return 0;

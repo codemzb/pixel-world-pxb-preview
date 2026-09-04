@@ -129,6 +129,7 @@ powershell -ExecutionPolicy Bypass -File scripts\package_windows.ps1
 11. **ImGui GL3 后端初始化顺序**：`rebuild_fonts()` 里的字体图集上传调用 `ImGui_ImplOpenGL3_CreateFontsTexture()`，而该后端的 GL 函数指针表由 `ImGui_ImplOpenGL3_Init()` 解析——**Init 必须先于 rebuild_fonts**（renderer.cpp 用 `gl3_backend_ready_` 标志兜底）。顺序颠倒 = 调空函数指针 → 0xc0000005 崩溃（曾发生在"init 阶段急切上传字体"的未验证改动里）。
 12. **DPI 缩放要成套改**：新增 UI 元素的手写像素常量必须乘 `ui_scale()`（ui.cpp），窗口尺寸逻辑在 renderer.cpp init()（Apple 平台除外——SDL 那边坐标是逻辑点，乘了会错一倍）。只改字体不改布局，或反之，都会在 175% 屏上出现截断/错位。
 13. **改完源码 ≠ 改完产物**：曾发生"源码已修、build 未编、dist 未同步 → 分发版完全不含修复"的事故。发版前检查链条：build exe 时间戳 > 源码 mtime → `scripts/package_windows.ps1` 重打 → `dist/windows/` 下产物时间戳更新。用户实际运行的是 dist/ 或安装版 exe，不是 build/ 里的。
+14. **CJK 字形范围别用完整 `0x4E00-0x9FFF`**：那是全套 ~21k 汉字，启动时 stb 栅格化 ~300ms + 图集上传 ~270ms（合计 ~0.6s，曾构成"打开软件白屏 1 秒"的全部根因）。renderer.cpp rebuild_fonts 的正确做法：`GetGlyphRangesChineseSimplifiedCommon()`（2500 常用字）+ `zh_strings()` 全量并入（i18n 文案自动覆盖"帧/剔/瞰"这类漏网字，新文案加进 kZh 即自动生效）。改字体必须同时保留这两步，否则要么慢、要么中文出 '?'。
 
 ## 8. 编码规范
 

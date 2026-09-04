@@ -160,7 +160,30 @@ file_bytes
 
 ---
 
-## 8. 兼容性建议
+## 8. 变体：无 preview_table 的 texture_table 导出（2026-08 样本，容器 2.1）
+
+部分 MZB.ONE 导出（容器版本头 2.1）**没有 `preview_table`**，JSON 顶层键为
+`version / content_type / metadata / scene / texture_table`：
+
+- `metadata.thumbnail_url`：`data:image/png;base64,…` 内嵌整图（实测 500×500 RGBA），
+  是这类文件唯一的高分辨率成品图。
+- `texture_table`：数组，每项 `{id, name, mime, width, height, offset, length}`，
+  指向数据区内的 **16×16（或 32×32）调色板纹理 PNG**（注意 JSON 里的
+  `width/height` 实测为占位值 1，不可信）。数据区开头是这些纹理 PNG 的顺序拼接。
+- 数据区尾部（源数据区）：每帧一条记录
+  `\x07 "Frame N" <可见标志> \xff\xff\xff\xff <u16le JSON长度> {"preview_data_url":"data:image/png;base64,…"}`
+  ——即帧预览也是内嵌 data URI（实测 256×256，为画布的降采样渲染）。从未渲染过的帧
+  记录为空对象 `{}`。图层记录（`"Layer N"`）同构，紧随其帧记录之后。
+  帧记录的像素索引缓冲位于各记录之间（依赖外部调色板，无法独立还原，同 §5）。
+
+**读取器策略（pxb_reader 已实现）**：`preview_table` 视为可选。缺失或无产出时回退：
+解码 `metadata.thumbnail_url` 作为文档缩略图；扫描源数据区 `Frame N` 记录提取逐帧
+`preview_data_url`。恰好得到一帧时优先使用缩略图（分辨率更高、内容相同）；一帧都
+没有时以缩略图作为单帧展示。
+
+---
+
+## 9. 兼容性建议
 
 - 读取器应**前向兼容**：`version_minor` 忽略，仅校验 `version_major == 2`；`json_length` 越界需保护。
 - `preview_table` 缺失时不应崩溃（回退到 thumbnail 或首帧）。

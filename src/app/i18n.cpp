@@ -4,6 +4,8 @@
 #include "i18n.h"
 
 #include <cstddef>
+#include <string>
+#include <vector>
 
 namespace pxb {
 
@@ -40,7 +42,7 @@ static const char* kZh[] = {
     "操作失败：\n",
     "未提升权限，已取消操作。",
     // panels
-    "预览", "信息内容", "帧", "图层",
+    "信息内容", "帧", "图层",
     // preview empty states
     "未加载文件。", "双击 .pxb、或将文件拖入窗口，", "或使用 文件 > 打开。滚轮缩放。",
     "此文件无预览图像。",
@@ -55,6 +57,8 @@ static const char* kZh[] = {
     // layers
     "（无图层信息）", "（已隐藏）",
     "提示：pxb 只存合成帧，无逐层像素，隐藏/显示仅记录状态。",
+    "提示：本文件带逐层预览，取消勾选的图层会从画面中剔除。",
+    "该图层无独立预览数据，勾选仅记录状态",
     // file list
     "（当前目录无 .pxb）",
     "搜索 .pxb 文件…",
@@ -68,7 +72,22 @@ static const char* kZh[] = {
     "构建于 %s", "关闭",
     // dialog
     "PXB 像素文件 (*.pxb)", "所有文件 (*.*)",
+    // view
+    "视图", "文件列表", "信息与图层", "鸟瞰地图", "鸟瞰",
+    // theme
+    "主题", "跟随系统", "深色", "亮色",
 };
+
+// Every Simplified-Chinese UI string. The font loader merges these into its
+// glyph set so every string the UI can produce has atlas glyphs — new strings
+// added to kZh are picked up automatically (i18n is the single source of UI
+// text, see AGENTS §8).
+std::vector<std::string> zh_strings() {
+    std::vector<std::string> out;
+    out.reserve(std::size(kZh));
+    for (const char* s : kZh) out.emplace_back(s);
+    return out;
+}
 
 static const char* kEn[] = {
     // menus
@@ -101,7 +120,7 @@ static const char* kEn[] = {
     "Operation failed:\n",
     "Elevation was declined; cancelled.",
     // panels
-    "Preview", "Info", "Frames", "Layers",
+    "Info", "Frames", "Layers",
     // preview empty states
     "No file loaded.", "Double-click a .pxb, or drag & drop one here,",
     "or use File > Open. Wheel = zoom.", "This file has no preview image.",
@@ -116,6 +135,8 @@ static const char* kEn[] = {
     // layers
     "(no layer info)", "(hidden)",
     "Note: pxb embeds only composited frames (no per-layer pixels); show/hide records state only.",
+    "Note: this file carries per-layer previews — unchecked layers are excluded from the picture.",
+    "No isolated preview for this layer; the checkbox records state only",
     // file list
     "(no .pxb in this folder)",
     "Search .pxb files…",
@@ -130,6 +151,10 @@ static const char* kEn[] = {
     "Built %s", "Close",
     // dialog
     "PXB Pixel Files (*.pxb)", "All Files (*.*)",
+    // view
+    "View", "File List", "Info & Layers", "Minimap", "Overview",
+    // theme
+    "Theme", "Follow system", "Dark", "Light",
 };
 
 static_assert(sizeof(kZh) / sizeof(kZh[0]) == (size_t)Str::Count_,

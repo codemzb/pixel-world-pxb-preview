@@ -31,7 +31,10 @@ ReadResult read_pxb_file(const std::string& path);
 RgbaImage read_thumbnail_file(const std::string& path);
 
 // Memory variants (no filesystem access) - used by shell thumbnail handlers
-// that hand us an IStream / file descriptor rather than a path.
-RgbaImage read_thumbnail_memory(const std::vector<uint8_t>& file_bytes);
+// that hand us an IStream / file descriptor rather than a path. `thumb_n` is
+// the square canvas edge in px — the shell requests up to 256, so decode at
+// 256 rather than the app-list size (88) to avoid upscale blur in Explorer.
+RgbaImage read_thumbnail_memory(const std::vector<uint8_t>& file_bytes,
+                                int thumb_n = 256);
 
 } // namespace pxb

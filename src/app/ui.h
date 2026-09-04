@@ -12,4 +12,8 @@ class Renderer;
 
 void render_ui(App& app, Renderer& renderer);
 
+// Persist the current view state (View-menu toggles, panel widths, minimap
+// position) to the config file. Call once at normal application exit.
+void save_view_settings(const App& app);
+
 } // namespace pxb

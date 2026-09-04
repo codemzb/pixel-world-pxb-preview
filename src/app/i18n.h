@@ -9,6 +9,9 @@
 //
 #pragma once
 
+#include <string>
+#include <vector>
+
 namespace pxb {
 
 enum class Lang { zh, en };
@@ -27,7 +30,7 @@ enum class Str {
     AssocRegisterTitle, AssocUnregisterTitle,
     AssocRegisterOk, AssocUnregisterOk, AssocFailPrefix, AssocNoElevation,
     // ---- panels ----
-    PanelPreview, PanelInfo, PanelFrames, PanelLayers,
+    PanelInfo, PanelFrames, PanelLayers,
     // ---- preview empty states / hints ----
     EmptyNoFile1, EmptyNoFile2, EmptyNoFile3, EmptyNoPreview,
     ZoomFit,
@@ -40,7 +43,7 @@ enum class Str {
     MetaCanvasFmt, MetaColorDepth, MetaCoordinate, MetaContainerFmt,
     MetaThumbIndexFmt, MetaFramesLayersFmt,
     // ---- layers ----
-    LayersNone, LayerHidden, LayersNote,
+    LayersNone, LayerHidden, LayersNote, LayersNoteLive, LayerNoPreview,
     // ---- file list ----
     ListEmpty, SearchPlaceholder,
     // ---- status bar ----
@@ -53,6 +56,10 @@ enum class Str {
     AboutClose,
     // ---- open-file dialog ----
     DlgPxbFiles, DlgAllFiles,
+    // ---- view menu / layout toggles ----
+    MenuView, MenuFileList, MenuInfoLayers, MenuMinimap, PanelMinimap,
+    // ---- theme ----
+    MenuTheme, ThemeSystem, ThemeDark, ThemeLight,
     // ---- placeholder (no document) ----
     Count_
 };
@@ -64,12 +71,16 @@ void set_lang(Lang l);
 // Look up the string for the active language. Never returns nullptr.
 const char* tr(Str s);
 
+// All Simplified-Chinese strings (for the font loader: every UI string the
+// language can produce must exist in the font atlas).
+std::vector<std::string> zh_strings();
+
 // Wide variant — only needed for the native file dialog filter on Windows.
 const wchar_t* trw(Str s);
 
 // App identity (used by the About window and the OS window title).
 inline constexpr const char* kAppName    = "PXB Preview";
-inline constexpr const char* kAppVersion = "0.0.1";
+inline constexpr const char* kAppVersion = "0.0.2";
 inline constexpr const char* kHomepage   = "https://px.mzb.one";
 
 // About-window fields that may need user confirmation before shipping.

@@ -44,6 +44,11 @@ struct PxbMeta {
     int thumbnail_preview_index = 0;
     int frame_count = 0;
     std::vector<int> durations_ms;   // per-frame duration (-1 = unspecified)
+
+    // `metadata.thumbnail_url` when it is a data: URI (newer exports that have
+    // no preview_table carry the document image here). Kept raw (not decoded)
+    // so the lazy list path only pays a PNG decode when a thumbnail is wanted.
+    std::string thumbnail_data_uri;
 };
 
 // Parsed header for both the lazy and full paths. `root` is kept so callers can

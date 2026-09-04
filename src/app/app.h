@@ -10,6 +10,7 @@
 
 #include "pxb_format.h"
 #include "pxb_cache.h"   // MetaCache (lazy/partial-decompression metadata cache)
+#include "theme.h"
 
 #include <functional>
 #include <list>
@@ -27,7 +28,10 @@ public:
 
     // Load a .pxb by filesystem path (UTF-8). Updates status_msg.
     // Multi-frame files start playing automatically.
-    bool load_file(const std::string& path);
+    // Takes the path BY VALUE on purpose: UI call sites pass references into
+    // sibling_pxb(), and load_file -> refresh_siblings(true) may reallocate
+    // that vector mid-call, which would dangle a const& parameter.
+    bool load_file(std::string path);
 
     // Called every frame with elapsed seconds. Advances animation when playing.
     void tick(double dt_seconds);
@@ -58,7 +62,12 @@ public:
     // Refreshed on every load_file(); empty directory scans "." (cwd).
     const std::vector<std::string>& sibling_pxb() const { return siblings_; }
     std::string sibling_dir() const { return siblings_dir_; }
-    void refresh_siblings();
+    // force=false: no-op when the directory is unchanged. force=true: re-list
+    // the directory even if unchanged (after load_file, so newly saved files
+    // show up) — but the metadata cache is only wiped when the directory
+    // itself changed, so switching files within one folder keeps all sibling
+    // thumbnails warm instead of re-decompressing the whole list.
+    void refresh_siblings(bool force = false);
 
     // Non-blocking read of a sibling .pxb's cached metadata + thumbnail. Returns
     // nullptr on a cache miss; a miss enqueues an async background prefetch
@@ -86,6 +95,31 @@ public:
     // before the first frame is rendered. Main.cpp wires this to the renderer
     // so the GPU textures can be built and the CPU pixel buffers discarded.
     std::function<void(PxbDocument&)> on_document_loaded;
+
+    // ----------------------------------------------------------------------
+    // Layer visibility (texture_table-flavor files with per-layer previews).
+    // Hiding such a layer excludes it from the displayed picture: the preview
+    // shows an alpha blend of the visible layers' isolated renders instead of
+    // the full-resolution composited frame. Classic preview_table files have
+    // no per-layer pixels — their checkboxes only record state.
+    // ----------------------------------------------------------------------
+    // Document texture key range: frames 0..n-1, the document thumbnail uses
+    // -999, the layer composite -888; sibling-list thumbnails start at -1000000
+    // (MetaCache's descending namespace). clear_document_textures() drops
+    // everything >= kDocThumbTexKey, so the constants must keep that gap.
+    static constexpr int kDocThumbTexKey = -999;
+    static constexpr int kLayerCompositeTexKey = -888;
+    // Call after any layer's `visible` flag changes. Invalidates the cached
+    // composite and its GPU texture.
+    void mark_layers_changed();
+    // Non-null only while a layer WITH a preview is hidden: the image the
+    // preview area should display instead of the composited frame/thumbnail.
+    const RgbaImage* layer_composite_if_filtering();
+    // Ratio full-image-width / composite-width. The composite covers the same
+    // canvas at a lower resolution; multiplying app.zoom by this keeps the
+    // on-screen picture size continuous when the display switches between the
+    // full image and the composite.
+    float layer_composite_scale() const;
 
     // ----------------------------------------------------------------------
     // NOTE ON NAMING CONVENTION
@@ -145,13 +179,48 @@ public:
     // bar is closing are dropped by ImGui, which made "About" appear dead).
     bool show_about = false;
 
+    // --- layout toggles & geometry (View menu; see ui.cpp render_ui) ---------
+    // Side-panel visibility switches and the bird's-eye minimap overlay.
+    // Defaults keep the window clean (preview only); they are overridden by
+    // the persisted config (settings.cpp) on the first rendered frame, and
+    // written back to it on exit.
+    bool show_list_panel = false;  // left sibling .pxb list
+    bool show_info_panel = false;  // right info + layers column
+    bool show_minimap    = true;   // overview map in the preview's corner
+
+    // Set once by the UI layer after applying the persisted view config on
+    // the first frame; also gates the save-on-exit in save_view_settings().
+    bool view_config_applied = false;
+
+    // User-resizable side-panel widths in preview pixels (already DPI-scaled;
+    // the UI clamps them against the available width every frame). <=0 means
+    // "unset" → the UI applies the kListWidth/kInfoWidth defaults.
+    float list_panel_width = 0.0f;
+    float info_panel_width = 0.0f;
+
+    // Minimap position, stored as an offset from the preview area's bottom-right
+    // corner (robust across window resizes). <=0 means "unset" → UI default.
+    float minimap_off_x = 0.0f;
+    float minimap_off_y = 0.0f;
+
+    // Color theme (System follows the OS appearance on Windows; Dark/Light
+    // force). Loaded from config.ini on the first rendered frame and written
+    // back on exit; the renderer picks it up via apply_theme (see ui.cpp).
+    ThemeMode theme_mode = ThemeMode::System;
+
     ~App();
 
 private:
     void reset_document_state();
+    void rebuild_layer_composite();
 
     std::string siblings_dir_;           // last scanned directory
     std::vector<std::string> siblings_;  // full paths of .pxb files in that dir
+
+    // Cached alpha-blend of the visible layers' isolated previews (rebuilt
+    // lazily; dirty flag also drops the GPU texture via mark_layers_changed).
+    RgbaImage layer_composite_;
+    bool layer_composite_dirty_ = true;
 
     // Lazy/partial-decompression metadata cache (hash-keyed, LRU-capped). This
     // replaces the old per-path thumbnail LRU: list display reads metadata +

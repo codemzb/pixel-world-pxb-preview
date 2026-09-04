@@ -89,6 +89,8 @@ set(APP_SOURCES
   src/app/ui.cpp
   src/app/regutil.cpp
   src/app/i18n.cpp
+  src/app/settings.cpp
+  src/app/theme.cpp
   ${TP}/miniz/miniz.c
   ${TP}/miniz/miniz_tdef.c
   ${TP}/miniz/miniz_tinfl.c

@@ -1,6 +1,8 @@
 // renderer.cpp
 #include "renderer.h"
+#include "app.h"        // App::kLayerCompositeTexKey (document texture range)
 #include "gl_loader.h"
+#include "i18n.h"       // zh_strings — font atlas must cover all UI strings
 
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
@@ -139,7 +141,10 @@ bool Renderer::init(int width, int height, const std::string& title, std::string
     ImGui_ImplOpenGL3_CreateFontsTexture();
     io.Fonts->ClearTexData();
 
-    pfn_glClearColor(0.16f, 0.16f, 0.18f, 1.0f);
+    // Start with the resolved default theme; the persisted `theme=` choice is
+    // applied by the UI layer on the first frame, before anything presents
+    // (apply_theme sets the ImGui palette AND the GL clear color).
+    apply_theme(ThemeMode::System);
     int pw = 0, ph = 0;
     SDL_GetWindowSizeInPixels(window_, &pw, &ph);
     pfn_glViewport(0, 0, pw, ph);
@@ -164,17 +169,34 @@ void Renderer::rebuild_fonts() {
     const float font_size = floorf(base_size * dpi_scale_ + 0.5f);
 
     // Glyph ranges: a *common-use* subset rather than the full CJK Unified
-    // Ideographs (which is ~20k glyphs and balloons the font atlas to
-    // 50-90 MB of RAM). Covers printable ASCII, daily-use Hanzi (GB2312
-    // equivalent), CJK punctuation, fullwidth forms, and a few smart quotes.
-    static const ImWchar ranges[] = {
+    // Ideographs block. The full 0x4E00-0x9FFF range means ~21,000 glyphs:
+    // ~300 ms of rasterization plus a 64 MB+ atlas upload on every launch
+    // (measured), so the font is built from ASCII + smart quotes + CJK
+    // symbols/punctuation + fullwidth forms + the ~2,500 most-used simplified
+    // Chinese characters (imgui's table covers ~98% of everyday text). Rare
+    // characters fall back to the '?' box — same tradeoff the surrounding
+    // comment already documented as the intent.
+    static const ImWchar base_ranges[] = {
         0x0020, 0x007F,          // ASCII
         0x2018, 0x2026,          // ' ' ' " … etc.
         0x3000, 0x303F,          // CJK symbols & punctuation
-        0x4E00, 0x9FFF,          // CJK Unified Ideographs (core)
         0xFF00, 0xFFEF,          // Fullwidth / Halfwidth forms
         0,
     };
+    ImFontGlyphRangesBuilder builder;
+    builder.AddRanges(base_ranges);
+    builder.AddRanges(io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+    // Merge every zh UI string so the atlas always covers what the UI can show
+    // (the 2500 glyphs above miss a few characters used by real strings, e.g.
+    // 帧/剔/瞰). i18n is the single source of UI text, so new strings are
+    // picked up automatically.
+    for (const std::string& s : zh_strings()) builder.AddText(s.c_str());
+    // Static: ImFontConfig::GlyphRanges is a pointer and the atlas keeps it in
+    // its config data until the next Build(), which must survive this function.
+    // BuildRanges appends, so clear between rebuilds (DPI-change re-entry).
+    static ImVector<ImWchar> glyph_ranges;
+    glyph_ranges.clear();
+    builder.BuildRanges(&glyph_ranges);
 
     // Platform CJK font candidates: first one that loads wins. These are the
     // stock system fonts on each OS — missing files simply make AddFont fail
@@ -206,7 +228,7 @@ void Renderer::rebuild_fonts() {
 
     ImFont* cjk = nullptr;
     for (const char* path : candidates) {
-        cjk = io.Fonts->AddFontFromFileTTF(path, font_size, nullptr, ranges);
+        cjk = io.Fonts->AddFontFromFileTTF(path, font_size, nullptr, glyph_ranges.Data);
         if (cjk) break;
     }
     if (cjk) io.Fonts->Build();
@@ -223,6 +245,82 @@ void Renderer::rebuild_fonts() {
         ImGui_ImplOpenGL3_DestroyFontsTexture();
         ImGui_ImplOpenGL3_CreateFontsTexture();
         io.Fonts->ClearTexData();
+    }
+}
+
+void Renderer::apply_theme(ThemeMode mode) {
+    const bool dark = is_dark_theme(mode);
+    const ThemeMode resolved = dark ? ThemeMode::Dark : ThemeMode::Light;
+    if (resolved == applied_theme_) return;
+    applied_theme_ = resolved;
+
+    ImGuiStyle& st = ImGui::GetStyle();
+    if (dark) {
+        // Keep the exact look the app shipped with (CreateContext defaults are
+        // the dark palette too; restating it makes the target explicit).
+        ImGui::StyleColorsDark(&st);
+    } else {
+        // Light palette: StyleColorsLight as the base, then tuned overrides so
+        // the chrome reads warm-neutral instead of blue-grey, text gets softer
+        // than pure black, and buttons/frames have clearly visible fills
+        // (the light defaults are nearly transparent, which blurs panel edges
+        // and makes hover states hard to see on white).
+        ImGui::StyleColorsLight(&st);
+        ImVec4* c = st.Colors;
+        c[ImGuiCol_Text]                   = ImVec4(0.16f, 0.16f, 0.18f, 1.00f);
+        c[ImGuiCol_TextDisabled]           = ImVec4(0.56f, 0.56f, 0.60f, 1.00f);
+        c[ImGuiCol_WindowBg]               = ImVec4(0.96f, 0.96f, 0.97f, 1.00f);
+        c[ImGuiCol_ChildBg]                = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+        c[ImGuiCol_PopupBg]                = ImVec4(0.99f, 0.99f, 1.00f, 1.00f);
+        c[ImGuiCol_Border]                 = ImVec4(0.56f, 0.56f, 0.62f, 0.60f);
+        c[ImGuiCol_BorderShadow]           = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+        c[ImGuiCol_FrameBg]                = ImVec4(0.89f, 0.89f, 0.92f, 1.00f);
+        c[ImGuiCol_FrameBgHovered]         = ImVec4(0.82f, 0.83f, 0.88f, 1.00f);
+        c[ImGuiCol_FrameBgActive]          = ImVec4(0.74f, 0.75f, 0.82f, 1.00f);
+        c[ImGuiCol_TitleBg]                = ImVec4(0.92f, 0.92f, 0.94f, 1.00f);
+        c[ImGuiCol_TitleBgActive]          = ImVec4(0.85f, 0.85f, 0.89f, 1.00f);
+        c[ImGuiCol_TitleBgCollapsed]       = ImVec4(0.92f, 0.92f, 0.94f, 0.80f);
+        c[ImGuiCol_MenuBarBg]              = ImVec4(0.94f, 0.94f, 0.96f, 1.00f);
+        c[ImGuiCol_ScrollbarBg]            = ImVec4(0.93f, 0.93f, 0.95f, 0.60f);
+        c[ImGuiCol_ScrollbarGrab]          = ImVec4(0.71f, 0.71f, 0.76f, 1.00f);
+        c[ImGuiCol_ScrollbarGrabHovered]   = ImVec4(0.63f, 0.63f, 0.69f, 1.00f);
+        c[ImGuiCol_ScrollbarGrabActive]    = ImVec4(0.54f, 0.54f, 0.61f, 1.00f);
+        c[ImGuiCol_CheckMark]              = ImVec4(0.18f, 0.45f, 0.94f, 1.00f);
+        c[ImGuiCol_SliderGrab]             = ImVec4(0.52f, 0.58f, 0.74f, 1.00f);
+        c[ImGuiCol_SliderGrabActive]       = ImVec4(0.32f, 0.42f, 0.66f, 1.00f);
+        c[ImGuiCol_Button]                 = ImVec4(0.89f, 0.89f, 0.92f, 1.00f);
+        c[ImGuiCol_ButtonHovered]          = ImVec4(0.80f, 0.81f, 0.87f, 1.00f);
+        c[ImGuiCol_ButtonActive]           = ImVec4(0.70f, 0.72f, 0.81f, 1.00f);
+        c[ImGuiCol_Header]                 = ImVec4(0.79f, 0.83f, 0.93f, 1.00f);
+        c[ImGuiCol_HeaderHovered]          = ImVec4(0.70f, 0.76f, 0.90f, 1.00f);
+        c[ImGuiCol_HeaderActive]           = ImVec4(0.62f, 0.69f, 0.86f, 1.00f);
+        c[ImGuiCol_Separator]              = ImVec4(0.80f, 0.80f, 0.85f, 1.00f);
+        c[ImGuiCol_SeparatorHovered]       = ImVec4(0.35f, 0.50f, 0.83f, 1.00f);
+        c[ImGuiCol_SeparatorActive]        = ImVec4(0.30f, 0.45f, 0.78f, 1.00f);
+        c[ImGuiCol_ResizeGrip]             = ImVec4(0.65f, 0.65f, 0.71f, 0.25f);
+        c[ImGuiCol_ResizeGripHovered]      = ImVec4(0.45f, 0.50f, 0.70f, 0.55f);
+        c[ImGuiCol_ResizeGripActive]       = ImVec4(0.35f, 0.45f, 0.70f, 0.90f);
+        c[ImGuiCol_Tab]                    = ImVec4(0.83f, 0.85f, 0.92f, 1.00f);
+        c[ImGuiCol_TabHovered]             = ImVec4(0.70f, 0.76f, 0.90f, 1.00f);
+        c[ImGuiCol_TabActive]              = ImVec4(0.92f, 0.93f, 0.97f, 1.00f);
+        c[ImGuiCol_TableHeaderBg]          = ImVec4(0.85f, 0.87f, 0.92f, 1.00f);
+        c[ImGuiCol_TableBorderStrong]      = ImVec4(0.62f, 0.62f, 0.68f, 1.00f);
+        c[ImGuiCol_TableBorderLight]       = ImVec4(0.76f, 0.76f, 0.81f, 1.00f);
+        c[ImGuiCol_TableRowBg]             = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+        c[ImGuiCol_TableRowBgAlt]          = ImVec4(0.20f, 0.20f, 0.30f, 0.05f);
+        c[ImGuiCol_TextSelectedBg]         = ImVec4(0.62f, 0.72f, 0.94f, 1.00f);
+        c[ImGuiCol_DragDropTarget]         = ImVec4(0.85f, 0.65f, 0.10f, 0.95f);
+        c[ImGuiCol_NavHighlight]           = ImVec4(0.35f, 0.50f, 0.85f, 1.00f);
+        c[ImGuiCol_NavWindowingHighlight]  = ImVec4(0.55f, 0.55f, 0.60f, 0.70f);
+        c[ImGuiCol_NavWindowingDimBg]      = ImVec4(0.20f, 0.20f, 0.20f, 0.20f);
+        c[ImGuiCol_ModalWindowDimBg]       = ImVec4(0.20f, 0.20f, 0.20f, 0.35f);
+    }
+    if (pfn_glClearColor) {
+        // Clear color only ever shows around the full-screen root window
+        // (resize flicker, first-present gaps); keep it near WindowBg.
+        pfn_glClearColor(dark ? 0.16f : 0.94f,
+                         dark ? 0.16f : 0.94f,
+                         dark ? 0.18f : 0.95f, 1.0f);
     }
 }
 
@@ -329,8 +427,14 @@ void Renderer::clear_document_textures() {
     if (!pfn_glDeleteTextures) { tex_cache_.clear(); return; }
     for (auto it = tex_cache_.begin(); it != tex_cache_.end();) {
         int k = it->first;
-        // Keep sibling-thumbnail textures (keys < -999); drop document keys.
-        if (k >= 0 || k == -999) {
+        // Keep sibling-thumbnail textures (keys < -999); drop ALL document
+        // keys: frames (0..n), the doc thumbnail (-999) AND the layer
+        // composite (-888). -999 must be dropped: it is cached by key, so an
+        // old document's thumbnail texture would otherwise be served to the
+        // newly loaded one (texture_for reuses by key, never re-uploads on a
+        // hit — a stale thumbnail showed in the list for every file after
+        // the first).
+        if (k >= App::kDocThumbTexKey) {
             GLuint t = it->second;
             pfn_glDeleteTextures(1, &t);
             it = tex_cache_.erase(it);
@@ -382,7 +486,7 @@ void Renderer::upload_document(PxbDocument& doc) {
         upload_and_discard(doc.frame_images[i].image, (int)i);
     }
     if (!doc.thumbnail.empty()) {
-        upload_and_discard(doc.thumbnail, -999);
+        upload_and_discard(doc.thumbnail, App::kDocThumbTexKey);
     }
 }
 

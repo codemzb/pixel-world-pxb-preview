@@ -97,16 +97,18 @@ App::~App() {
 // for sibling .pxb files. Results are cached per-directory so we don't re-walk
 // the filesystem every frame. Newly discovered siblings are enqueued for
 // background metadata prefetch.
-void App::refresh_siblings() {
+void App::refresh_siblings(bool force) {
     std::string dir = current_path.empty() ? "." : path_parent(current_path);
-    if (dir == siblings_dir_) return;   // already scanned this directory
+    bool dir_changed = (dir != siblings_dir_);
+    if (!dir_changed && !force) return;   // already scanned this directory
     siblings_dir_ = dir;
-    // Directory changed: drop the previous folder's cached entries (their GL
-    // texture keys are queued for deletion on the main thread via
-    // frame_cache_maintenance). The LRU cap bounds memory anyway, but clearing
-    // here keeps RAM/GPU at one directory's worth instead of accumulating
-    // across folders.
-    meta_cache_.clear();
+    // Drop the previous folder's cached entries ONLY when the directory actually
+    // changed. A same-directory force re-scan (load_file) keeps the cache: its
+    // entries are still valid (find() weak-checks size/mtime per access), and
+    // wiping them made every file switch re-decompress + re-upload the entire
+    // sibling list — the whole panel visibly re-rendered on each switch.
+    // Cross-folder growth stays bounded by the MetaCache LRU cap.
+    if (dir_changed) meta_cache_.clear();
     siblings_.clear();
     for (auto& e : list_directory(dir)) {
         if (e.is_dir) continue;
@@ -148,9 +150,76 @@ void App::reset_document_state() {
     fit_next_frame = true;
     // Reset pan so a freshly loaded document starts centered.
     pan_x = pan_y = 0.0f;
+    // Drop any previous document's layer composite.
+    layer_composite_ = RgbaImage{};
+    layer_composite_dirty_ = true;
 }
 
-bool App::load_file(const std::string& path) {
+// Alpha-blend (straight-alpha "over") the visible layers' isolated previews
+// onto a transparent canvas sized by the first preview. Layers without a
+// preview (or with mismatched dimensions) cannot be placed and are skipped.
+void App::rebuild_layer_composite() {
+    layer_composite_ = RgbaImage{};
+    int w = 0, h = 0;
+    for (const auto& ly : doc.layers) {
+        if (!ly.preview.empty()) { w = ly.preview.width; h = ly.preview.height; break; }
+    }
+    if (w <= 0 || h <= 0) { layer_composite_dirty_ = false; return; }
+    layer_composite_.width = w;
+    layer_composite_.height = h;
+    layer_composite_.pixels.assign((size_t)w * h * 4, 0);
+    for (const auto& ly : doc.layers) {
+        if (!ly.visible || ly.preview.empty()) continue;
+        if (ly.preview.width != w || ly.preview.height != h) continue;
+        if (ly.preview.pixels.size() < (size_t)w * h * 4) continue;
+        const uint8_t* s = ly.preview.pixels.data();
+        uint8_t* d = layer_composite_.pixels.data();
+        const size_t n = (size_t)w * h;
+        for (size_t i = 0; i < n; ++i, s += 4, d += 4) {
+            const float sa = s[3] / 255.0f;
+            if (sa <= 0.0f) continue;
+            const float da = d[3] / 255.0f;
+            const float oa = sa + da * (1.0f - sa);
+            for (int k = 0; k < 3; ++k)
+                d[k] = (uint8_t)((s[k] * sa + d[k] * da * (1.0f - sa)) / oa + 0.5f);
+            d[3] = (uint8_t)(oa * 255.0f + 0.5f);
+        }
+    }
+    layer_composite_dirty_ = false;
+}
+
+void App::mark_layers_changed() {
+    layer_composite_dirty_ = true;
+    // The cached composite texture no longer matches the new visibility set.
+    if (renderer_) renderer_->drop_texture(kLayerCompositeTexKey);
+}
+
+const RgbaImage* App::layer_composite_if_filtering() {
+    if (!doc.has_layer_previews()) return nullptr;
+    // Filtering kicks in only when a layer that COULD be excluded is hidden;
+    // hiding a preview-less layer changes nothing on screen (its checkbox is
+    // a state record), so it must not downgrade the display resolution.
+    bool filtering = false;
+    for (const auto& ly : doc.layers) {
+        if (!ly.visible && !ly.preview.empty()) { filtering = true; break; }
+    }
+    if (!filtering) return nullptr;
+    if (layer_composite_dirty_ || layer_composite_.empty())
+        rebuild_layer_composite();
+    return &layer_composite_;
+}
+
+float App::layer_composite_scale() const {
+    if (layer_composite_.empty() || layer_composite_.width <= 0) return 1.0f;
+    // Same source the UI would show without filtering: frame 0, else thumbnail.
+    int full_w = 0;
+    if (!doc.frame_images.empty()) full_w = doc.frame_images[0].image.width;
+    else if (!doc.thumbnail.empty()) full_w = doc.thumbnail.width;
+    if (full_w <= 0) return 1.0f;
+    return (float)full_w / (float)layer_composite_.width;
+}
+
+bool App::load_file(std::string path) {
     if (!is_pxb_file(path)) {
         status_msg = std::string(tr(Str::StatusNotPxb)) + path;
         return false;
@@ -163,13 +232,10 @@ bool App::load_file(const std::string& path) {
     }
     doc = std::move(r.doc);
     current_path = path;
-    // Force a re-scan of the file's directory. refresh_siblings() normally
-    // short-circuits when the directory is unchanged; clearing the cached dir
-    // guarantees the sibling list always reflects the newly opened file's
-    // folder, even when it happens to equal the startup cwd (where a failed
-    // or empty first scan would otherwise leave the list stale forever).
-    siblings_dir_.clear();
-    refresh_siblings();
+    // Force a re-scan of the file's directory (new files saved since the last
+    // scan must appear), but keep the metadata cache when the directory is
+    // unchanged — see refresh_siblings() for why.
+    refresh_siblings(true);
     reset_document_state();
     char buf[512];
     snprintf(buf, sizeof(buf), tr(Str::StatusLoadedFmt),

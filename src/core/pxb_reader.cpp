@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 #include <set>
+#include <map>
 #include <algorithm>
 #ifdef _WIN32
 #include <windows.h>
@@ -89,6 +90,92 @@ static bool verify_gzip_trailer(const std::vector<uint8_t>& file_bytes,
     return calc == crc && calc_isize == isize;
 }
 
+// Pull the value of a single string-valued JSON key out of a raw buffer, e.g.
+// {"preview_data_url":"data:image/png;base64,..."} . Data URIs contain no
+// quotes or escapes, so a plain scan to the closing quote is sufficient; the
+// result is validated downstream by the data-URI/PNG decoders anyway.
+static bool extract_json_string_field(const uint8_t* buf, size_t len,
+                                      const char* key, std::string& out) {
+    const size_t klen = strlen(key);
+    if (len < klen + 4) return false;
+    for (size_t i = 0; i + klen + 2 < len; ++i) {
+        if (buf[i] != '"' || memcmp(buf + i + 1, key, klen) != 0) continue;
+        size_t j = i + 1 + klen;
+        if (j >= len || buf[j] != '"') continue;         // closing quote of key
+        while (j < len && buf[j] != ':') ++j;
+        while (j < len && buf[j] != '"') ++j;            // opening quote of value
+        if (j >= len) return false;
+        size_t start = ++j;
+        while (j < len && buf[j] != '"') ++j;
+        if (j >= len) return false;
+        out.assign((const char*)buf + start, j - start);
+        return true;
+    }
+    return false;
+}
+
+// Newer exports without a preview_table embed per-frame and per-layer preview
+// images in the editable source region, one
+// {"preview_data_url":"data:image/...;base64,..."} record per length-prefixed
+// "Frame N" / "Layer N" name marker (the same marker shape scan_source_names
+// matches). Each record owns everything up to the next same-kind marker;
+// entries that were never rendered carry an empty record and are skipped.
+// Returns previews ordered by the parsed index.
+static std::vector<std::pair<std::string, RgbaImage>>
+extract_record_previews(const std::vector<uint8_t>& payload, size_t source_off,
+                        const char* keyword) {
+    std::vector<std::pair<std::string, RgbaImage>> out;
+    const size_t klen = strlen(keyword);   // e.g. 6 for "Frame "/"Layer "
+    if (source_off >= payload.size() || klen < 6) return out;
+    const auto& r = payload;
+
+    // Locate markers: (record start = length-byte position, name end, parsed
+    // index, full name).
+    struct Mark { size_t rec_start, name_end; int idx; std::string name; };
+    std::vector<Mark> marks;
+    for (size_t i = source_off; i + 1 < r.size(); ++i) {
+        uint8_t L = r[i];
+        if (L < 7 || L > 48 || i + 1 + L > r.size()) continue;
+        const char* p = (const char*)&r[i + 1];
+        if (memcmp(p, keyword, klen) != 0) continue;
+        const char* q = p + klen;
+        size_t rem = (size_t)L - klen;
+        int idx = 0; bool ok = rem > 0;
+        for (size_t k = 0; k < rem && ok; ++k) {
+            if (q[k] < '0' || q[k] > '9') { ok = false; break; }
+            idx = idx * 10 + (q[k] - '0');
+        }
+        if (ok) marks.push_back({i, i + 1 + L, idx, std::string(p, L)});
+    }
+    if (marks.empty()) return out;
+
+    // First preview_data_url record inside each marker's region wins.
+    std::map<int, std::pair<std::string, RgbaImage>> by_index;
+    for (size_t m = 0; m < marks.size(); ++m) {
+        size_t start = marks[m].name_end;
+        size_t end = (m + 1 < marks.size()) ? marks[m + 1].rec_start : r.size();
+        if (end <= start) continue;
+        // Don't reach across a following record of the OTHER kind (a frame's
+        // layers sit between it and the next frame marker; stop at either).
+        for (size_t k = start; k + 7 < end; ++k) {
+            uint8_t Lb = r[k];
+            if (Lb >= 6 && Lb <= 48 && k + 1 + Lb <= end &&
+                (memcmp(&r[k + 1], "Frame ", 6) == 0 ||
+                 memcmp(&r[k + 1], "Layer ", 6) == 0)) { end = k; break; }
+        }
+        std::string uri;
+        if (!extract_json_string_field(r.data() + start, end - start,
+                                       "preview_data_url", uri))
+            continue;   // empty {} record (never rendered)
+        RgbaImage img = decode_data_uri_rgba(uri);
+        if (!img.empty())
+            by_index.emplace(marks[m].idx,
+                             std::make_pair(marks[m].name, std::move(img)));
+    }
+    for (auto& kv : by_index) out.push_back(std::move(kv.second));
+    return out;
+}
+
 // Parse an already-decompressed payload into a PxbDocument. Shared by read_pxb
 // (full load) — uses parse_pxb_header() for the metadata block so the JSON
 // parsing logic lives in exactly one place with the lazy path.
@@ -113,58 +200,66 @@ static bool parse_pxb_payload(const std::vector<uint8_t>& payload, ReadResult& r
     d.scene.coordinate = h.meta.coordinate;
     d.thumbnail_preview_index = h.meta.thumbnail_preview_index;
 
-    const auto& pt = (*h.root)["preview_table"];
-    if (!pt || !pt->is_array()) { res.error = "missing preview_table"; return false; }
-
+    // preview_table is OPTIONAL (see parse_pxb_header): newer exports carry a
+    // `texture_table` + inline thumbnail data URI instead. When it is absent
+    // (or yields nothing) the fallback at the end of this function renders the
+    // document from metadata.thumbnail_url + the source-region frame records.
     size_t data_start = h.data_start;
     struct FrameItem { int frame_index; RgbaImage img; int duration_ms = 0; };
     std::vector<FrameItem> frames;
     uint64_t source_off = data_start;
 
-    for (const auto& entry : pt->arr) {
-        if (!entry) continue;
-        PreviewEntry pe;
-        pe.blob_type = entry->get("type");
-        pe.kind = kind_from_string(pe.blob_type);
-        const auto& ov = (*entry)["offset"];
-        const auto& lv = (*entry)["length"];
-        pe.offset = ov ? (uint64_t)ov->as_number(0) : 0;
-        pe.length = lv ? (uint64_t)lv->as_number(0) : 0;
-        int dur = -1;
-        if (pe.kind == PreviewKind::Frame) {
-            auto fi = (*entry)["frame_index"];
-            pe.frame_index = fi ? fi->as_int(-1) : -1;
-            const auto& di = (*entry)["duration"];
-            const auto& ti = di ? di : (*entry)["time"];
-            if (ti) {
-                int v = (int)ti->as_number(0);
-                if (v > 0) dur = v;   // only explicit positive durations count
+    // preview_table is OPTIONAL (see parse_pxb_header): newer exports carry a
+    // `texture_table` + inline thumbnail data URI instead. When it is absent
+    // (or yields nothing) the fallback at the end of this function renders the
+    // document from metadata.thumbnail_url + the source-region frame records.
+    const auto& pt = (*h.root)["preview_table"];
+    if (pt && pt->is_array()) {
+        for (const auto& entry : pt->arr) {
+            if (!entry) continue;
+            PreviewEntry pe;
+            pe.blob_type = entry->get("type");
+            pe.kind = kind_from_string(pe.blob_type);
+            const auto& ov = (*entry)["offset"];
+            const auto& lv = (*entry)["length"];
+            pe.offset = ov ? (uint64_t)ov->as_number(0) : 0;
+            pe.length = lv ? (uint64_t)lv->as_number(0) : 0;
+            int dur = -1;
+            if (pe.kind == PreviewKind::Frame) {
+                auto fi = (*entry)["frame_index"];
+                pe.frame_index = fi ? fi->as_int(-1) : -1;
+                const auto& di = (*entry)["duration"];
+                const auto& ti = di ? di : (*entry)["time"];
+                if (ti) {
+                    int v = (int)ti->as_number(0);
+                    if (v > 0) dur = v;   // only explicit positive durations count
+                }
             }
+            d.previews.push_back(pe);
+
+            // Bounds-check against the data section; skip if out of range.
+            uint64_t avail = (uint64_t)(payload.size() - data_start);
+            if (pe.length > avail || pe.offset > avail - pe.length) continue;
+
+            const uint8_t* blob = payload.data() + data_start + (size_t)pe.offset;
+            RgbaImage img = decode_image_rgba(blob, (size_t)pe.length);
+            if (img.empty()) continue;   // skip undecodable blobs (no empty frames)
+
+            if (pe.kind == PreviewKind::Thumbnail) {
+                d.thumbnail = std::move(img);
+            } else if (pe.kind == PreviewKind::Frame) {
+                frames.push_back({pe.frame_index, std::move(img), dur});
+            }
+            source_off = std::max(source_off, data_start + (size_t)pe.offset + (size_t)pe.length);
         }
-        d.previews.push_back(pe);
 
-        // Bounds-check against the data section; skip if out of range.
-        uint64_t avail = (uint64_t)(payload.size() - data_start);
-        if (pe.length > avail || pe.offset > avail - pe.length) continue;
-
-        const uint8_t* blob = payload.data() + data_start + (size_t)pe.offset;
-        RgbaImage img = decode_image_rgba(blob, (size_t)pe.length);
-        if (img.empty()) continue;   // skip undecodable blobs (no empty frames)
-
-        if (pe.kind == PreviewKind::Thumbnail) {
-            d.thumbnail = std::move(img);
-        } else if (pe.kind == PreviewKind::Frame) {
-            frames.push_back({pe.frame_index, std::move(img), dur});
-        }
-        source_off = std::max(source_off, data_start + (size_t)pe.offset + (size_t)pe.length);
+        // Order frames by frame_index (stable for equal indices).
+        std::stable_sort(frames.begin(), frames.end(),
+                         [](const FrameItem& a, const FrameItem& b) {
+                             return a.frame_index < b.frame_index;
+                         });
+        for (auto& f : frames) d.frame_images.push_back({std::move(f.img), f.duration_ms});
     }
-
-    // Order frames by frame_index (stable for equal indices).
-    std::stable_sort(frames.begin(), frames.end(),
-                     [](const FrameItem& a, const FrameItem& b) {
-                         return a.frame_index < b.frame_index;
-                     });
-    for (auto& f : frames) d.frame_images.push_back({std::move(f.img), f.duration_ms});
 
     // Layer / frame name scan from the editable source region.
     std::vector<std::string> frame_names, layer_names;
@@ -175,6 +270,34 @@ static bool parse_pxb_payload(const std::vector<uint8_t>& payload, ReadResult& r
         li.id = (int)i;
         li.visible = true;
         d.layers.push_back(li);
+    }
+
+    if (d.frame_images.empty() && d.thumbnail.empty()) {
+        // No usable preview_table. Newer MZB.ONE exports (texture_table
+        // flavor) keep the document image in metadata.thumbnail_url and
+        // per-frame / per-layer renders as preview_data_url records in the
+        // source region.
+        d.thumbnail = decode_data_uri_rgba(h.meta.thumbnail_data_uri);
+        auto tail_frames = extract_record_previews(payload, data_start, "Frame ");
+        if (tail_frames.size() == 1 && !d.thumbnail.empty()) {
+            // Single-frame document: the metadata thumbnail shows the same
+            // image, usually at a higher resolution — prefer it.
+            d.frame_images.push_back({d.thumbnail, -1});
+        } else if (!tail_frames.empty()) {
+            for (auto& im : tail_frames) d.frame_images.push_back({std::move(im.second), -1});
+        } else if (!d.thumbnail.empty()) {
+            d.frame_images.push_back({d.thumbnail, -1});
+        }
+        // Attach isolated layer renders (matched by record name) so the UI
+        // can exclude hidden layers from the picture. Layers listed multiple
+        // times (e.g. under several frame records) keep their first preview.
+        auto tail_layers = extract_record_previews(payload, data_start, "Layer ");
+        for (auto& rec : tail_layers) {
+            for (auto& ly : d.layers) {
+                if (ly.name == rec.first && ly.preview.empty())
+                    ly.preview = std::move(rec.second);
+            }
+        }
     }
 
     if (d.frame_images.empty() && d.thumbnail.empty()) {
@@ -235,8 +358,9 @@ RgbaImage read_thumbnail_file(const std::string& path) {
     return read_thumbnail_partial(buf);
 }
 
-RgbaImage read_thumbnail_memory(const std::vector<uint8_t>& file_bytes) {
-    return read_thumbnail_partial(file_bytes);
+RgbaImage read_thumbnail_memory(const std::vector<uint8_t>& file_bytes,
+                                int thumb_n) {
+    return read_thumbnail_partial(file_bytes, thumb_n);
 }
 
 } // namespace pxb

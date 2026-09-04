@@ -71,11 +71,14 @@ static fs::path utf8_to_path(const std::string& u8) {
 // delimiters. UTF-8 multibyte sequences never contain these bytes, so this is
 // correct for paths in any language without touching std::filesystem at all.
 static size_t last_sep(const std::string& s) {
-    size_t p = std::string::npos;
-    size_t q = s.find_last_of('/');
-    if (q != std::string::npos) p = q;
-    q = s.find_last_of('\\');
-    if (q != std::string::npos && q > p) p = q;
+    size_t p = s.find_last_of('/');
+    size_t q = s.find_last_of('\\');
+    if (q == std::string::npos) return p;
+    // Compare only against a valid p: npos is the max value, so the naive
+    // `q > p` test never fired when the path had no '/' at all — every
+    // Win32-originated backslash path (dialog / drop / argv) then behaved as
+    // separator-less and path_parent() collapsed to ".".
+    if (p == std::string::npos || q > p) return q;
     return p;
 }
 

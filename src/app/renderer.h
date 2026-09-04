@@ -8,6 +8,7 @@
 #pragma once
 
 #include "pxb_format.h"
+#include "theme.h"
 #include <functional>
 #include <string>
 #include <unordered_map>
@@ -71,6 +72,13 @@ public:
     int height() const { return height_; }
     float dpi_scale() const { return dpi_scale_; }
 
+    // Apply the active UI theme: ImGui style colors + the GL clear color.
+    // Idempotent — no-op unless the effective theme changed. When `mode` is
+    // System the OS preference is re-checked (cached ~2 s), so an OS theme
+    // switch applies while the app is running. Only touches colors, never the
+    // DPI-scaled style metrics (ScaleAllSizes owns those).
+    void apply_theme(ThemeMode mode);
+
 private:
     SDL_Window* window_ = nullptr;
     SDL_GLContextState* gl_ = nullptr;
@@ -81,6 +89,7 @@ private:
     bool gl3_backend_ready_ = false;
     int width_ = 0, height_ = 0;
     float dpi_scale_ = 1.0f;
+    ThemeMode applied_theme_ = ThemeMode::Dark;   // theme currently in the style + clear color
     std::unordered_map<int, unsigned int> tex_cache_;   // key -> GL texture id
 
     // Rebuild the ImGui font atlas at the current dpi_scale_. Uploads to GPU

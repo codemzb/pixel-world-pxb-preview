@@ -20,3 +20,5 @@ Thumbs.db
 
 # 防呆：私有笔记请放 _Local_*（历史教训：Local_AGENTS.md 少个下划线被误提交）
 /Local_*.md
+# 本机专用脚本（如 Local_package.ps1 一键打包）
+/Local_*.ps1
